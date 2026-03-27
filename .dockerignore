@@ -1,0 +1,40 @@
+# Virtual environment — never copy into container
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+.eggs/
+*.egg-info/
+
+# Data files — mount as volumes or load from S3 at runtime
+data/
+mlruns/
+mlartifacts/
+
+# Dev tooling
+.git/
+.github/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Docs and notebooks
+docs/
+notebooks/
+infra/
+
+# Local config
+.env
+.env.*
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
