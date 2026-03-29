@@ -89,7 +89,7 @@ async def _enrich(
         "amount_zar": tx.amount_zar,
         "payment_rail": tx.payment_rail,
         "timestamp": tx.timestamp.isoformat(),
-        "device_id": tx.sender_device_id,
+        "sender_device_id": tx.sender_device_id,
         "sender_bank": tx.sender_bank,
         "is_fraud": tx.is_fraud,
         # Velocity features
