@@ -121,6 +121,7 @@ async def run_consumer(group_id: str = GROUP_ID) -> None:
     """
     velocity_checker = VelocityChecker(REDIS_URL)
     feature_store = AsyncFeatureStore(REDIS_URL)
+    await feature_store.connect()
 
     consumer = AIOKafkaConsumer(
         TOPIC_IN,
@@ -198,6 +199,7 @@ async def run_consumer(group_id: str = GROUP_ID) -> None:
         await consumer.stop()
         await producer.stop()
         await velocity_checker.close()
+        await feature_store.close()
         logger.info(f"Consumer stopped. processed={processed:,}  errors={errors}")
 
 
