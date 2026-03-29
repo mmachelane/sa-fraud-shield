@@ -56,8 +56,10 @@ train-gnn:
 
 train-federated:
 	python -m models.federated.simulate \
-		--data-path data/raw/transactions.parquet \
-		--num-rounds 50
+		--rounds 20 \
+		--epochs 5 \
+		--noise 1.0 \
+		--clip 1.0
 
 # ── Serving ───────────────────────────────────────────────────────────────────
 serve:
