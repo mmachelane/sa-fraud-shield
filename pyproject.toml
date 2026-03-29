@@ -22,8 +22,7 @@ dependencies = [
     "faker>=25.0.0",
 
     # Streaming
-    "faust-streaming==0.10.14",
-    "aiokafka>=0.8.0,<0.9.0",
+    "aiokafka>=0.11.0",
     "confluent-kafka>=2.4.0",
 
     # API

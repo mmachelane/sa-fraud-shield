@@ -1,0 +1,1 @@
+"""Faust stream processing consumers."""
