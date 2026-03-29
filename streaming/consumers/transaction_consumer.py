@@ -86,7 +86,7 @@ async def _enrich(
         "transaction_id": tx.transaction_id,
         "sender_account_id": tx.sender_account_id,
         "receiver_account_id": tx.receiver_account_id,
-        "amount_zar": tx.amount_zar,
+        "amount_zar": float(tx.amount_zar),
         "payment_rail": tx.payment_rail,
         "timestamp": tx.timestamp.isoformat(),
         "sender_device_id": tx.sender_device_id,
