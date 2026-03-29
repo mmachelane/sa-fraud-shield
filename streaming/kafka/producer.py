@@ -45,23 +45,22 @@ BOOTSTRAP_SERVERS = "localhost:9092"
 # Columns needed — avoids loading all 50+ columns into memory
 _REQUIRED_COLS = [
     "transaction_id",
+    "timestamp",
     "sender_account_id",
     "receiver_account_id",
     "amount_zar",
     "payment_rail",
     "merchant_category",
-    "device_id",
-    "timestamp",
-    "is_fraud",
-    "fraud_type",
-    "sender_bank",
-    "receiver_bank",
+    "merchant_id",
+    "sender_device_id",
     "sender_province",
     "receiver_province",
-    "sender_phone",
-    "receiver_phone",
-    "latitude",
-    "longitude",
+    "is_fraud",
+    "fraud_type",
+    "sim_swap_detected",
+    "sim_swap_timestamp",
+    "loadshedding_active",
+    "loadshedding_stage",
 ]
 
 
@@ -79,27 +78,38 @@ def _load_transactions(path: Path, limit: int | None, fraud_only: bool) -> pd.Da
 
 
 def _row_to_transaction(row: pd.Series) -> Transaction:
+    def _opt(col: str) -> str | None:
+        val = row.get(col)
+        return str(val) if val is not None and pd.notna(val) else None
+
+    def _opt_bool(col: str) -> bool:
+        val = row.get(col)
+        return bool(val) if val is not None and pd.notna(val) else False
+
+    def _opt_int(col: str) -> int | None:
+        val = row.get(col)
+        return int(val) if val is not None and pd.notna(val) else None
+
     return Transaction(
         transaction_id=str(row["transaction_id"]),
+        timestamp=pd.Timestamp(row["timestamp"]).to_pydatetime(),
         sender_account_id=str(row["sender_account_id"]),
-        receiver_account_id=str(row["receiver_account_id"]),
+        receiver_account_id=_opt("receiver_account_id"),
         amount_zar=float(row["amount_zar"]),
         payment_rail=row["payment_rail"],
-        merchant_category=row.get("merchant_category"),
-        device_id=str(row["device_id"]) if pd.notna(row.get("device_id")) else None,
-        timestamp=pd.Timestamp(row["timestamp"]).to_pydatetime(),
-        is_fraud=bool(row["is_fraud"]),
-        fraud_type=row.get("fraud_type") if pd.notna(row.get("fraud_type")) else None,
-        sender_bank=row.get("sender_bank"),
-        receiver_bank=row.get("receiver_bank"),
-        sender_province=row.get("sender_province"),
-        receiver_province=row.get("receiver_province"),
-        sender_phone=str(row.get("sender_phone", "")),
-        receiver_phone=str(row.get("receiver_phone", ""))
-        if pd.notna(row.get("receiver_phone"))
+        merchant_category=row.get("merchant_category") or "unknown",
+        merchant_id=_opt("merchant_id"),
+        sender_device_id=_opt("sender_device_id"),
+        sender_province=_opt("sender_province"),
+        receiver_province=_opt("receiver_province"),
+        is_fraud=bool(row["is_fraud"]) if pd.notna(row.get("is_fraud")) else None,
+        fraud_type=_opt("fraud_type"),
+        sim_swap_detected=_opt_bool("sim_swap_detected"),
+        sim_swap_timestamp=pd.Timestamp(row["sim_swap_timestamp"]).to_pydatetime()
+        if pd.notna(row.get("sim_swap_timestamp"))
         else None,
-        latitude=float(row["latitude"]) if pd.notna(row.get("latitude")) else None,
-        longitude=float(row["longitude"]) if pd.notna(row.get("longitude")) else None,
+        loadshedding_active=_opt_bool("loadshedding_active"),
+        loadshedding_stage=_opt_int("loadshedding_stage"),
     )
 
 

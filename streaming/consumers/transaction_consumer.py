@@ -72,10 +72,10 @@ async def _enrich(
     )
 
     # Track device for unique-device velocity
-    if tx.device_id:
+    if tx.sender_device_id:
         await velocity_checker.record_device(
             account_id=tx.sender_account_id,
-            device_id=tx.device_id,
+            device_id=tx.sender_device_id,
             timestamp=tx.timestamp,
         )
 
@@ -89,7 +89,7 @@ async def _enrich(
         "amount_zar": tx.amount_zar,
         "payment_rail": tx.payment_rail,
         "timestamp": tx.timestamp.isoformat(),
-        "device_id": tx.device_id,
+        "device_id": tx.sender_device_id,
         "sender_bank": tx.sender_bank,
         "is_fraud": tx.is_fraud,
         # Velocity features
