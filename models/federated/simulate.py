@@ -1,13 +1,13 @@
 """
 Federated learning simulation entry point.
 
-Runs a Flower in-process simulation with 5 SA bank clients, DPFedAvg strategy,
-and central Gaussian DP noise. Logs all metrics to MLflow.
+Runs an in-process federation loop (no Ray required) with 5 SA bank clients,
+DPFedAvg strategy, and central Gaussian DP noise. Logs all metrics to MLflow.
 
 Usage:
     python -m models.federated.simulate [--rounds 20] [--epochs 5] [--noise 1.0]
     # or via Makefile:
-    make federated
+    make train-federated
 
 Key hyperparameters (edit at top of file or pass via CLI):
     --rounds        Number of federation rounds          (default: 20)
@@ -29,9 +29,9 @@ import logging
 import sys
 from pathlib import Path
 
-import flwr as fl
 import mlflow
 import torch
+from flwr.common import ndarrays_to_parameters, parameters_to_ndarrays
 
 # Ensure project root is on sys.path when run as __main__
 _ROOT = Path(__file__).resolve().parents[2]
@@ -57,41 +57,92 @@ ARTIFACT_DIR: Path = Path("models/federated/artifacts")
 EXPERIMENT_NAME: str = "federated-dp-fraudshield"
 
 
-# ── Client factory ────────────────────────────────────────────────────────────
+# ── In-process federation loop ────────────────────────────────────────────────
 
 
-def _client_fn(
-    shards: dict,
-    hidden_dim: int,
-    dropout: float,
-    local_epochs: int,
-    lr: float,
-    clip_norm: float,
-    device: torch.device,
-) -> fl.client.ClientFn:
-    """Return a Flower client_fn closure bound to the pre-built shards."""
-    bank_names = list(shards.keys())
+def _run_federation(
+    clients: list[FraudShieldClient],
+    strategy,  # DPFedAvg
+    num_rounds: int,
+) -> dict:
+    """
+    Manual federation loop — equivalent to Flower's start_simulation
+    but runs entirely in-process without Ray.
 
-    def client_fn(cid: str) -> FraudShieldClient:
-        bank = bank_names[int(cid)]
-        return FraudShieldClient(
-            bank_name=bank,
-            shard=shards[bank],
-            hidden_dim=hidden_dim,
-            dropout=dropout,
-            local_epochs=local_epochs,
-            lr=lr,
-            clip_norm=clip_norm,
-            device=device,
-        )
+    Each round:
+      1. Distribute current global parameters to all clients
+      2. Each client runs fit() → returns updated weights + num_examples
+      3. Strategy aggregates (FedAvg + DP noise) → new global parameters
+      4. Strategy evaluate_fn() tests the global model across all shards
+      5. Each client runs evaluate() → local val metrics collected
+    """
+    # Pull initial parameters from strategy
+    parameters = strategy.initial_parameters
+    history: dict[str, list] = {"loss": [], "metrics": []}
 
-    return client_fn
+    for server_round in range(1, num_rounds + 1):
+        logger.info(f"── Round {server_round}/{num_rounds} ──────────────────")
+        ndarrays = parameters_to_ndarrays(parameters)
+
+        # ── Fit phase ────────────────────────────────────────────────────────
+        fit_results = []
+        for client in clients:
+            updated_params, num_examples, fit_metrics = client.fit(ndarrays, config={})
+            # Wrap as Flower FitRes-compatible tuple
+            fit_results.append((updated_params, num_examples, fit_metrics))
+            logger.info(
+                f"  {client.bank_name:<15} trained  "
+                f"loss={fit_metrics.get('train_loss', 0):.4f}  n={num_examples}"
+            )
+
+        # ── Aggregate (DPFedAvg + noise) ─────────────────────────────────────
+        # Build the (ClientProxy-like, FitRes-like) tuples the strategy expects.
+        # We use a simple namespace since DPFedAvg only reads .parameters and
+        # .num_examples from FitRes, and doesn't use ClientProxy at all.
+        from types import SimpleNamespace
+
+        from flwr.common import Code, FitRes, Status
+
+        flower_results = []
+        for updated_params, num_examples, fit_metrics in fit_results:
+            fit_res = FitRes(
+                status=Status(code=Code.OK, message=""),
+                parameters=ndarrays_to_parameters(updated_params),
+                num_examples=num_examples,
+                metrics={k: float(v) for k, v in fit_metrics.items()},
+            )
+            flower_results.append((SimpleNamespace(), fit_res))
+
+        aggregated_params, agg_metrics = strategy.aggregate_fit(server_round, flower_results, [])
+        if aggregated_params is None:
+            logger.warning(f"Round {server_round}: aggregation returned None — skipping")
+            continue
+        parameters = aggregated_params
+        logger.info(f"  Aggregated  epsilon={agg_metrics.get('epsilon', 0):.4f}")
+
+        # ── Global evaluation (server-side, across all shards) ────────────────
+        eval_ndarrays = parameters_to_ndarrays(parameters)
+        eval_result = strategy.evaluate_fn(server_round, eval_ndarrays, {})
+        if eval_result is not None:
+            loss, eval_metrics = eval_result
+            history["loss"].append(loss)
+            history["metrics"].append(eval_metrics)
+
+        # ── Client-side evaluate (local val metrics) ──────────────────────────
+        for client in clients:
+            val_loss, val_n, val_metrics = client.evaluate(eval_ndarrays, config={})
+            logger.info(
+                f"  {client.bank_name:<15} val_auc={val_metrics.get('local_val_auc', 0):.4f}  "
+                f"val_ap={val_metrics.get('local_val_ap', 0):.4f}"
+            )
+
+    return history
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
-def main(args: argparse.Namespace) -> None:
+def main(args: argparse.Namespace) -> dict:
     device = torch.device(args.device)
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -99,7 +150,7 @@ def main(args: argparse.Namespace) -> None:
     shards = partition_graph(
         graph_path=GRAPH_PATH,
         accounts_path=ACCOUNTS_PATH,
-        device="cpu",  # keep on CPU; clients move batches as needed
+        device="cpu",
         seed=args.seed,
     )
     logger.info(f"Shards ready: {list(shards.keys())}")
@@ -118,15 +169,19 @@ def main(args: argparse.Namespace) -> None:
         device=device,
     )
 
-    client_fn = _client_fn(
-        shards=shards,
-        hidden_dim=args.hidden_dim,
-        dropout=args.dropout,
-        local_epochs=args.epochs,
-        lr=args.lr,
-        clip_norm=args.clip,
-        device=device,
-    )
+    clients = [
+        FraudShieldClient(
+            bank_name=bank,
+            shard=shards[bank],
+            hidden_dim=args.hidden_dim,
+            dropout=args.dropout,
+            local_epochs=args.epochs,
+            lr=args.lr,
+            clip_norm=args.clip,
+            device=device,
+        )
+        for bank in shards
+    ]
 
     mlflow.set_experiment(EXPERIMENT_NAME)
     with mlflow.start_run(
@@ -151,13 +206,7 @@ def main(args: argparse.Namespace) -> None:
             f"noise_multiplier={args.noise}, clip_norm={args.clip}"
         )
 
-        history = fl.simulation.start_simulation(
-            client_fn=client_fn,
-            num_clients=len(shards),
-            config=fl.server.ServerConfig(num_rounds=args.rounds),
-            strategy=strategy,
-            client_resources={"num_cpus": 1},
-        )
+        history = _run_federation(clients, strategy, num_rounds=args.rounds)
 
         # Log final epsilon
         final_epsilon = strategy.epsilon
@@ -179,7 +228,7 @@ def main(args: argparse.Namespace) -> None:
                 {
                     "best_global_auc": ckpt["global_test_auc"],
                     "best_global_ap": ckpt["global_test_ap"],
-                    "best_round": ckpt["server_round"],
+                    "best_round": float(ckpt["server_round"]),
                 }
             )
 
