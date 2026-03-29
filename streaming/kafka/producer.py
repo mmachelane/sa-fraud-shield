@@ -126,7 +126,6 @@ async def _produce(df: pd.DataFrame, speed: float | None) -> None:
         key_serializer=lambda k: k.encode("utf-8"),
         compression_type="gzip",
         linger_ms=5,
-        batch_size=32768,
     )
     await producer.start()
 
