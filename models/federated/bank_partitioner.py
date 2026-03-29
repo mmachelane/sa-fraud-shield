@@ -107,7 +107,7 @@ def partition_graph(
 
     for bank in _MAIN_BANKS:
         account_indices = torch.tensor(
-            (bank_series == bank).nonzero()[0].tolist(), dtype=torch.long
+            (bank_series == bank).to_numpy().nonzero()[0].tolist(), dtype=torch.long
         )
 
         shard: HeteroData = data.subgraph({"account": account_indices})
