@@ -48,6 +48,7 @@ class SimSwapDetector:
         self.model: lgb.LGBMClassifier | None = None
         self.feature_names: list[str] = []
         self.explainer: shap.TreeExplainer | None = None
+        self._booster: lgb.Booster | None = None
 
     def _get_feature_cols(self, df: pd.DataFrame) -> list[str]:
         return [c for c in df.columns if c not in NON_FEATURE_COLS]
@@ -81,6 +82,9 @@ class SimSwapDetector:
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:  # noqa: N803
         assert self.model is not None, "Model not trained"
+        # Use booster directly if available (avoids sklearn fitted-state checks)
+        if hasattr(self, "_booster") and self._booster is not None:
+            return self._booster.predict(X.values)
         return self.model.predict_proba(X)[:, 1]
 
     def explain(self, X: pd.DataFrame, max_rows: int = 100) -> pd.DataFrame:  # noqa: N803
@@ -124,8 +128,13 @@ class SimSwapDetector:
         path = Path(path)
         detector = cls()
         booster = lgb.Booster(model_file=str(path / "model.txt"))
+        # Store booster directly — use it for prediction instead of sklearn wrapper
+        # LGBMClassifier.predict_proba requires full sklearn fit state; booster.predict is sufficient
         detector.model = lgb.LGBMClassifier()
         detector.model._Booster = booster
         detector.model._n_features = booster.num_feature()
+        detector.model.n_features_in_ = booster.num_feature()
+        detector.model._n_classes = 2
+        detector._booster = booster  # direct booster reference for fast inference
         detector.feature_names = json.loads((path / "feature_names.json").read_text())
         return detector

@@ -201,10 +201,11 @@ def score_transaction(
 
     latency_ms = (time.monotonic() - t0) * 1000
 
+    sim_str = f"{sim_swap_score:.3f}" if sim_swap_score is not None else "N/A"
+    gnn_str = f"{gnn_score:.3f}" if gnn_score is not None else "N/A"
     logger.info(
         f"Scored {tx.transaction_id[:8]}…  "
-        f"sim={sim_swap_score:.3f if sim_swap_score is not None else 'N/A'}  "
-        f"gnn={gnn_score:.3f if gnn_score is not None else 'N/A'}  "
+        f"sim={sim_str}  gnn={gnn_str}  "
         f"ensemble={ensemble:.3f}  decision={decision}  {latency_ms:.1f}ms"
     )
 
