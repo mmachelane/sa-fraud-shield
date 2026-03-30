@@ -206,8 +206,11 @@ def train(
 
         # ── Save model ──
         final_detector.save(model_output_dir)
-        mlflow.log_artifact(str(model_output_dir / "model.txt"), artifact_path="model")
-        mlflow.log_artifact(str(model_output_dir / "feature_names.json"), artifact_path="model")
+        try:
+            mlflow.log_artifact(str(model_output_dir / "model.txt"), artifact_path="model")
+            mlflow.log_artifact(str(model_output_dir / "feature_names.json"), artifact_path="model")
+        except Exception as e:
+            logger.warning(f"MLflow artifact upload skipped: {e}")
 
         logger.info(f"Model saved to {model_output_dir}")
         mlflow.log_param("n_cv_folds", len(folds))

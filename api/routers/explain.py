@@ -4,19 +4,19 @@ POST /explain  — POPIA-compliant fraud explanation endpoint.
 Returns the same score as /score PLUS:
   - SHAP values for each SIM swap feature
   - Top N features ranked by absolute SHAP value
-  - Plain-English narrative suitable for customer communication
+  - Plain-English narrative (LLM-generated via Claude, template fallback)
+  - isiZulu narrative for SA language compliance
+  - Graph attribution scores from GNN explainer
     (POPIA Section 71: right to know why an automated decision was made)
-
-The narrative uses a template approach — no LLM dependency required.
-LLM-powered narratives (litellm) are wired in Phase 9 (explainability/).
 
 Example response:
     {
         "transaction_id": "abc-123",
-        "shap_values": {"sim_swap_detected": 0.42, "tx_count_5min": 0.18, ...},
-        "top_features": [["sim_swap_detected", 0.42], ["tx_count_5min", 0.18]],
-        "narrative_en": "This transaction was blocked because ...",
-        "graph_attribution": null,
+        "shap_values": {"new_device_first_tx": 261.28, "amount_zar": 107.84, ...},
+        "top_features": [["new_device_first_tx", 261.28], ["amount_zar", 107.84]],
+        "narrative_en": "This transaction was blocked because a new device...",
+        "narrative_zu": "Le ntlawulelwano ivinjelwe...",
+        "graph_attribution": {"account_uses_device": 0.68, "sim_swap_ring_pattern": 0.80},
         "model_version": "sim_swap_v1+federated_gnn_r9"
     }
 """
@@ -28,34 +28,13 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 
 from api.services.scorer import _build_sim_swap_features, score_transaction
+from explainability.gnn_explainer import compute_online_attribution
+from explainability.llm_narrative import generate_narratives
 from shared.schemas import ExplanationResponse, ScoreRequest
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/explain", tags=["explainability"])
-
-_DECISION_TEMPLATES = {
-    "BLOCK": (
-        "This transaction was blocked by our fraud detection system. "
-        "The top indicators were: {top_features}. "
-        "If you believe this is an error, please contact your bank."
-    ),
-    "STEP_UP": (
-        "Additional verification was required for this transaction. "
-        "The system detected elevated risk based on: {top_features}."
-    ),
-    "APPROVE": ("This transaction was approved. No significant fraud indicators were detected."),
-}
-
-
-def _format_feature_name(name: str) -> str:
-    return name.replace("_", " ").capitalize()
-
-
-def _build_narrative(decision: str, top_features: list[tuple[str, float]]) -> str:
-    top_str = ", ".join(f"{_format_feature_name(f)} ({v:+.3f})" for f, v in top_features[:3])
-    template = _DECISION_TEMPLATES.get(decision, _DECISION_TEMPLATES["APPROVE"])
-    return template.format(top_features=top_str)
 
 
 @router.post("", response_model=ExplanationResponse)
@@ -63,8 +42,9 @@ async def explain(request: Request, body: ScoreRequest) -> ExplanationResponse:
     """
     Score a transaction and return a POPIA-compliant explanation.
 
-    Includes SHAP values, top contributing features, and a plain-English
-    narrative explaining the automated decision (POPIA Section 71).
+    Includes SHAP values, top contributing features, LLM-generated
+    narratives in English and isiZulu, and GNN graph attribution scores.
+    Falls back to template narratives if ANTHROPIC_API_KEY is not set.
     """
     registry = request.app.state.registry
 
@@ -77,10 +57,10 @@ async def explain(request: Request, body: ScoreRequest) -> ExplanationResponse:
     tx = body.transaction
     enriched = body.account_features.model_dump() if body.account_features else None
 
-    # Score first
+    # ── Score ─────────────────────────────────────────────────────────────────
     result = score_transaction(tx=tx, registry=registry, enriched=enriched)
 
-    # SHAP explanation from SIM swap model
+    # ── SHAP explanation ──────────────────────────────────────────────────────
     shap_values: dict[str, float] = {}
     top_features: list[tuple[str, float]] = []
 
@@ -94,15 +74,39 @@ async def explain(request: Request, body: ScoreRequest) -> ExplanationResponse:
 
         shap_df = registry.sim_swap.explain(feature_df)
         shap_row = shap_df.iloc[0].to_dict()
-
         shap_values = {k: float(v) for k, v in shap_row.items()}
         top_features = sorted(shap_values.items(), key=lambda x: abs(x[1]), reverse=True)[:10]
 
     except Exception as e:
         logger.warning(f"SHAP explanation failed: {e}")
 
-    narrative = _build_narrative(result.decision, top_features)
+    # ── LLM narratives (English + isiZulu) ────────────────────────────────────
+    rail_val = tx.payment_rail.value if hasattr(tx.payment_rail, "value") else str(tx.payment_rail)
+    narrative_en, narrative_zu = generate_narratives(
+        decision=result.decision,
+        ensemble_score=result.ensemble_score,
+        top_features=top_features,
+        amount_zar=float(tx.amount_zar),
+        payment_rail=rail_val,
+        sim_swap_detected=bool(tx.sim_swap_detected),
+    )
 
+    # ── GNN graph attribution ─────────────────────────────────────────────────
+    graph_attribution: dict[str, float] | None = None
+    if result.gnn_score is not None:
+        try:
+            graph_attribution = compute_online_attribution(
+                account_id=tx.sender_account_id,
+                sender_device_id=tx.sender_device_id or "",
+                receiver_account_id=tx.receiver_account_id,
+                sim_swap_detected=bool(tx.sim_swap_detected),
+                gnn_score=result.gnn_score,
+                enriched=enriched,
+            )
+        except Exception as e:
+            logger.warning(f"GNN attribution failed: {e}")
+
+    # ── Model version ─────────────────────────────────────────────────────────
     model_version = "sim_swap_v1"
     if registry.gnn_loaded:
         model_version += "+federated_gnn_r9"
@@ -111,7 +115,8 @@ async def explain(request: Request, body: ScoreRequest) -> ExplanationResponse:
         transaction_id=result.transaction_id,
         shap_values=shap_values,
         top_features=top_features,
-        narrative_en=narrative,
-        graph_attribution=None,  # wired in Phase 9
+        narrative_en=narrative_en,
+        narrative_zu=narrative_zu,
+        graph_attribution=graph_attribution if graph_attribution else None,
         model_version=model_version,
     )

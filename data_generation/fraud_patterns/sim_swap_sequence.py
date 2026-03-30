@@ -37,7 +37,7 @@ from shared.constants import (
     PaymentRail,
     SAMerchantCategory,
 )
-from shared.utils.load_shedding import OutageWindow
+from shared.utils.load_shedding import LoadSheddingSchedule, OutageWindow
 
 
 @dataclass
@@ -71,6 +71,7 @@ def generate_sim_swap_sequence(
     start_time: datetime,
     account_balance_zar: float = 15000.0,
     loadshedding_window: OutageWindow | None = None,
+    loadshedding_schedule: LoadSheddingSchedule | None = None,
     rng: random.Random | None = None,
 ) -> SimSwapSequence:
     """
@@ -111,6 +112,15 @@ def generate_sim_swap_sequence(
         swap_time
     )
 
+    def _ls_at(ts: datetime) -> tuple[bool, int | None]:
+        """Return (loadshedding_active, stage) for a given timestamp."""
+        if loadshedding_schedule is None:
+            return False, None
+        outage = loadshedding_schedule.get_active_outage(ts)
+        if outage:
+            return True, outage.stage
+        return False, None
+
     transactions: list[dict[str, Any]] = []
     current_time = activation_time
 
@@ -135,6 +145,7 @@ def generate_sim_swap_sequence(
         ]
     )
 
+    probe_ls_active, probe_ls_stage = _ls_at(probe_time)
     transactions.append(
         {
             "transaction_id": str(uuid.uuid4()),
@@ -146,11 +157,14 @@ def generate_sim_swap_sequence(
             "merchant_category": probe_merchant.value,
             "merchant_id": f"merch_{uuid.uuid4().hex[:8]}",
             "sender_device_id": f"dev_new_{uuid.uuid4().hex[:12]}",  # New/unknown device
+            "sender_province": victim_account.get("province", "GP"),
             "is_fraud": True,
             "fraud_type": FraudType.SIM_SWAP.value,
             "sim_swap_detected": True,
             "sim_swap_timestamp": swap_time,
             "connectivity_gap_minutes": connectivity_gap_minutes,
+            "loadshedding_active": probe_ls_active,
+            "loadshedding_stage": probe_ls_stage,
             "loadshedding_coincident": loadshedding_overlap,
             "sequence_step": "probe",
         }
@@ -190,6 +204,7 @@ def generate_sim_swap_sequence(
         else:
             rail = PaymentRail.EFT
 
+        drain_ls_active, drain_ls_stage = _ls_at(drain_time)
         transactions.append(
             {
                 "transaction_id": str(uuid.uuid4()),
@@ -201,11 +216,14 @@ def generate_sim_swap_sequence(
                 "merchant_category": SAMerchantCategory.PEER_TRANSFER.value,
                 "merchant_id": None,
                 "sender_device_id": f"dev_new_{uuid.uuid4().hex[:12]}",
+                "sender_province": victim_account.get("province", "GP"),
                 "is_fraud": True,
                 "fraud_type": FraudType.SIM_SWAP.value,
                 "sim_swap_detected": True,
                 "sim_swap_timestamp": swap_time,
                 "connectivity_gap_minutes": connectivity_gap_minutes,
+                "loadshedding_active": drain_ls_active,
+                "loadshedding_stage": drain_ls_stage,
                 "loadshedding_coincident": loadshedding_overlap,
                 "sequence_step": f"drain_{i + 1}",
             }

@@ -113,7 +113,14 @@ def _build_sim_swap_features(tx: Transaction, enriched: dict | None) -> pd.DataF
 
     # SIM swap timing
     if tx.sim_swap_timestamp is not None:
-        minutes_ago = (now - tx.sim_swap_timestamp).total_seconds() / 60
+        # Normalise timezone: strip tzinfo from both sides if needed
+        t_now = now.replace(tzinfo=None) if now.tzinfo is None else now
+        t_swap = tx.sim_swap_timestamp
+        if t_now.tzinfo is None and t_swap.tzinfo is not None:
+            t_swap = t_swap.replace(tzinfo=None)
+        elif t_now.tzinfo is not None and t_swap.tzinfo is None:
+            t_swap = t_swap.replace(tzinfo=UTC)
+        minutes_ago = (t_now - t_swap).total_seconds() / 60
         features["time_since_sim_swap_minutes"] = max(0.0, minutes_ago)
         features["is_loadshedding_coincident"] = float(tx.loadshedding_active and minutes_ago <= 60)
         features["new_device_first_tx"] = 1.0
@@ -128,13 +135,19 @@ def _build_sim_swap_features(tx: Transaction, enriched: dict | None) -> pd.DataF
         features["new_device_first_tx"] = float(enriched.get("new_device_first_tx", 0))
 
     # Payment rail one-hot
-    rail_key = f"payment_rail_{tx.payment_rail}"
+    rail_val = tx.payment_rail.value if hasattr(tx.payment_rail, "value") else str(tx.payment_rail)
+    rail_key = f"payment_rail_{rail_val}"
     if rail_key in features:
         features[rail_key] = 1.0
 
     # Merchant category one-hot
     if tx.merchant_category:
-        cat_key = f"merchant_category_{str(tx.merchant_category).lower()}"
+        cat_val = (
+            tx.merchant_category.value
+            if hasattr(tx.merchant_category, "value")
+            else str(tx.merchant_category)
+        )
+        cat_key = f"merchant_category_{cat_val.lower()}"
         if cat_key in features:
             features[cat_key] = 1.0
 
@@ -169,9 +182,24 @@ def score_transaction(
                 if col not in feature_df.columns:
                     feature_df[col] = 0.0
             feature_df = feature_df[model_features]
+
+            # DEBUG: log key feature values
+            row = feature_df.iloc[0]
+            logger.info(
+                f"[DEBUG] features: "
+                f"time_since_sim_swap_minutes={row['time_since_sim_swap_minutes']:.1f}  "
+                f"is_loadshedding_coincident={row['is_loadshedding_coincident']}  "
+                f"new_device_first_tx={row['new_device_first_tx']}  "
+                f"amount_zar={row['amount_zar']}  "
+                f"payment_rail_PAYSHAP={row['payment_rail_PAYSHAP']}  "
+                f"loadshedding_active={row['loadshedding_active']}  "
+                f"loadshedding_stage={row['loadshedding_stage']}"
+            )
+
             sim_swap_score = float(registry.sim_swap.predict_proba(feature_df)[0])
+            logger.info(f"[DEBUG] raw sim_swap_score={sim_swap_score}")
         except Exception as e:
-            logger.warning(f"SIM swap scoring failed: {e}")
+            logger.warning(f"SIM swap scoring failed: {e}", exc_info=True)
 
     # ── GNN model ─────────────────────────────────────────────────────────────
     # The GNN needs a full subgraph — not available per-transaction at score time.

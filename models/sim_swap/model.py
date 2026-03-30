@@ -90,7 +90,9 @@ class SimSwapDetector:
     def explain(self, X: pd.DataFrame, max_rows: int = 100) -> pd.DataFrame:  # noqa: N803
         """Return SHAP values for X (up to max_rows rows)."""
         if self.explainer is None:
-            self.explainer = shap.TreeExplainer(self.model)
+            # Use booster directly if available (loaded models lack full sklearn state)
+            model_for_shap = self._booster if self._booster is not None else self.model
+            self.explainer = shap.TreeExplainer(model_for_shap)
         subset = X.head(max_rows)
         shap_values = self.explainer.shap_values(subset)
         if isinstance(shap_values, list):
