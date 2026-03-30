@@ -40,30 +40,44 @@ _W_GNN = 0.4
 _THRESHOLD_BLOCK = 0.7
 _THRESHOLD_STEP_UP = 0.3
 
-# SIM swap feature defaults for fields not available at score time
+# SIM swap feature defaults matching the trained model's feature set
 _FEATURE_DEFAULTS: dict[str, float] = {
-    "device_changes_1hr": 0.0,
-    "device_changes_24hr": 0.0,
+    "time_since_sim_swap_minutes": 99999.0,
+    "is_loadshedding_coincident": 0.0,
+    "device_changed": 0.0,
     "new_device_first_tx": 0.0,
-    "sim_swap_detected": 0.0,
-    "sim_swap_hours_ago": 999.0,
-    "sim_swap_within_1hr": 0.0,
-    "sim_swap_within_6hr": 0.0,
-    "sim_swap_within_24hr": 0.0,
+    "velocity_1h": 0.0,
+    "velocity_spike_ratio": 1.0,
+    "province_mismatch": 0.0,
+    "amount_zar": 0.0,
+    "amount_to_balance_ratio": 0.0,
+    "log_amount": 0.0,
     "loadshedding_active": 0.0,
     "loadshedding_stage": 0.0,
-    "loadshedding_coincident": 0.0,
-    "connectivity_gap_minutes": 0.0,
-    "tx_count_5min": 0.0,
-    "tx_count_1hr": 0.0,
-    "tx_count_24hr": 0.0,
-    "amount_sum_1hr": 0.0,
-    "amount_sum_24hr": 0.0,
-    "amount_zar": 0.0,
     "hour_of_day": 0.0,
     "is_weekend": 0.0,
-    "days_since_account_open": 0.0,
-    "prior_fraud_alerts_30d": 0.0,
+    # payment rail one-hots
+    "payment_rail_ATM": 0.0,
+    "payment_rail_CARD_CNP": 0.0,
+    "payment_rail_CARD_PRESENT": 0.0,
+    "payment_rail_CASH_DEPOSIT": 0.0,
+    "payment_rail_EFT": 0.0,
+    "payment_rail_MOBILE_APP": 0.0,
+    "payment_rail_PAYSHAP": 0.0,
+    # merchant category one-hots
+    "merchant_category_clothing": 0.0,
+    "merchant_category_crypto_exchange": 0.0,
+    "merchant_category_electronics": 0.0,
+    "merchant_category_fuel": 0.0,
+    "merchant_category_gambling": 0.0,
+    "merchant_category_grocery": 0.0,
+    "merchant_category_peer_transfer": 0.0,
+    "merchant_category_pharmacy": 0.0,
+    "merchant_category_restaurant": 0.0,
+    "merchant_category_spaza_shop": 0.0,
+    "merchant_category_taxi": 0.0,
+    "merchant_category_unknown": 0.0,
+    "merchant_category_utilities": 0.0,
 }
 
 
@@ -80,44 +94,49 @@ class ScoreResult:
 
 def _build_sim_swap_features(tx: Transaction, enriched: dict | None) -> pd.DataFrame:
     """
-    Build a single-row feature DataFrame for the SIM swap model.
-    Uses enriched velocity features from Kafka if available,
-    otherwise falls back to defaults.
+    Build a single-row feature DataFrame matching the trained SIM swap model.
+    Uses enriched velocity features from Kafka if available.
     """
+    import math
+
     now = tx.timestamp
     features = _FEATURE_DEFAULTS.copy()
 
-    # Transaction-level features
-    features["amount_zar"] = float(tx.amount_zar)
+    # Core transaction features
+    amount = float(tx.amount_zar)
+    features["amount_zar"] = amount
+    features["log_amount"] = math.log1p(amount)
     features["hour_of_day"] = float(now.hour)
     features["is_weekend"] = float(now.weekday() >= 5)
-    features["sim_swap_detected"] = float(tx.sim_swap_detected)
     features["loadshedding_active"] = float(tx.loadshedding_active)
     features["loadshedding_stage"] = float(tx.loadshedding_stage or 0)
 
+    # SIM swap timing
     if tx.sim_swap_timestamp is not None:
-        hours_ago = (now - tx.sim_swap_timestamp).total_seconds() / 3600
-        features["sim_swap_hours_ago"] = max(0.0, hours_ago)
-        features["sim_swap_within_1hr"] = float(hours_ago <= 1)
-        features["sim_swap_within_6hr"] = float(hours_ago <= 6)
-        features["sim_swap_within_24hr"] = float(hours_ago <= 24)
+        minutes_ago = (now - tx.sim_swap_timestamp).total_seconds() / 60
+        features["time_since_sim_swap_minutes"] = max(0.0, minutes_ago)
+        features["is_loadshedding_coincident"] = float(tx.loadshedding_active and minutes_ago <= 60)
+        features["new_device_first_tx"] = 1.0
 
-    # Velocity features from enriched Kafka payload
+    # Velocity from Kafka enrichment
     if enriched:
-        for key in (
-            "tx_count_5min",
-            "tx_count_1hr",
-            "tx_count_24hr",
-            "amount_sum_1hr",
-            "amount_sum_24hr",
-            "unique_devices_24hr",
-            "device_change_24h",
-            "new_device_first_tx",
-            "days_since_account_open",
-            "prior_fraud_alerts_30d",
-        ):
-            if key in enriched:
-                features[key] = float(enriched[key])
+        vel_1h = float(enriched.get("tx_count_1hr", 0))
+        vel_avg = float(enriched.get("tx_count_24hr", 0)) / 24.0
+        features["velocity_1h"] = vel_1h
+        features["velocity_spike_ratio"] = vel_1h / max(vel_avg, 1.0)
+        features["device_changed"] = float(enriched.get("device_change_24h", 0))
+        features["new_device_first_tx"] = float(enriched.get("new_device_first_tx", 0))
+
+    # Payment rail one-hot
+    rail_key = f"payment_rail_{tx.payment_rail}"
+    if rail_key in features:
+        features[rail_key] = 1.0
+
+    # Merchant category one-hot
+    if tx.merchant_category:
+        cat_key = f"merchant_category_{str(tx.merchant_category).lower()}"
+        if cat_key in features:
+            features[cat_key] = 1.0
 
     return pd.DataFrame([features])
 
