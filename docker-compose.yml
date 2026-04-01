@@ -159,6 +159,7 @@ services:
     volumes:
       - grafana-data:/var/lib/grafana
       - ./monitoring/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/datasources:/etc/grafana/provisioning/datasources:ro
 
   # ── Application ───────────────────────────────────────────────────────────────
   fraud-shield-api:
