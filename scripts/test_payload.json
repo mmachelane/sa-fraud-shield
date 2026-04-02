@@ -1,1 +1,0 @@
-{"transaction":{"transaction_id":"tx-001","sender_account_id":"acc-001","receiver_account_id":"acc-002","amount_zar":15000,"payment_rail":"PAYSHAP","merchant_category":"peer_transfer","timestamp":"2024-06-15T13:00:00","sim_swap_detected":true,"sim_swap_timestamp":"2024-06-15T12:30:00","loadshedding_active":true,"loadshedding_stage":2}}
